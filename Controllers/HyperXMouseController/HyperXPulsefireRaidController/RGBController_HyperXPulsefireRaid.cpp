@@ -138,6 +138,25 @@ RGBController_HyperXPulsefireRaid::RGBController_HyperXPulsefireRaid(HyperXPulse
 
     SetupZones();
 
+    // Initialize LED colors from current on-board memory
+    unsigned char* cached = controller->GetCachedProfile();
+    colors[0] = ToRGBColor(cached[57], cached[58], cached[59]); // Wheel
+    colors[1] = ToRGBColor(cached[54], cached[55], cached[56]); // Logo
+    if(colors[0] == 0 && colors[1] == 0)
+    {
+        colors[0] = ToRGBColor(0, 0, 255);
+        colors[1] = ToRGBColor(255, 0, 0);
+    }
+
+    if(zones.size() > 0 && zones[0].modes.size() > 1 && zones[0].modes[1].colors.size() > 0)
+    {
+        zones[0].modes[1].colors[0] = colors[0];
+    }
+    if(zones.size() > 1 && zones[1].modes.size() > 1 && zones[1].modes[1].colors.size() > 0)
+    {
+        zones[1].modes[1].colors[0] = colors[1];
+    }
+
     keepalive_thread_run = 1;
     keepalive_thread = new std::thread(&RGBController_HyperXPulsefireRaid::KeepaliveThread, this);
 }
@@ -307,8 +326,20 @@ void RGBController_HyperXPulsefireRaid::DeviceUpdateMode()
     DeviceUpdateLEDs();
 }
 
-void RGBController_HyperXPulsefireRaid::DeviceUpdateZoneMode(int /*zone*/)
+void RGBController_HyperXPulsefireRaid::DeviceUpdateZoneMode(int zone)
 {
+    if(zone >= 0 && (std::size_t)zone < zones.size())
+    {
+        int z_mode = zones[zone].active_mode;
+        if(z_mode >= 0 && z_mode < (int)zones[zone].modes.size())
+        {
+            if(zones[zone].modes[z_mode].name == "Static" && zones[zone].modes[z_mode].colors.size() > 0)
+            {
+                colors[zone] = zones[zone].modes[z_mode].colors[0];
+            }
+        }
+    }
+
     DeviceUpdateLEDs();
 }
 
@@ -344,13 +375,50 @@ void RGBController_HyperXPulsefireRaid::SendHardwareConfig(unsigned char slot)
         return;
     }
 
-    // Resolve colors for Scroll Wheel (Zone 0)
-    RGBColor w_prim = (mode_ptr[0]->colors.size() > 0) ? mode_ptr[0]->colors[0] : colors[0];
-    RGBColor w_sec  = (mode_ptr[0]->colors.size() > 1) ? mode_ptr[0]->colors[1] : ToRGBColor(0, 0, 0);
+    // Default primary and secondary colors (anchored to per-LED colors)
+    RGBColor w_prim = colors[0];
+    RGBColor w_sec  = ToRGBColor(0, 0, 0);
 
-    // Resolve colors for Logo (Zone 1)
-    RGBColor l_prim = (mode_ptr[1]->colors.size() > 0) ? mode_ptr[1]->colors[0] : colors[1];
-    RGBColor l_sec  = (mode_ptr[1]->colors.size() > 1) ? mode_ptr[1]->colors[1] : ToRGBColor(0, 0, 0);
+    RGBColor l_prim = colors[1];
+    RGBColor l_sec  = ToRGBColor(0, 0, 0);
+
+    // Resolve Scroll Wheel (Zone 0)
+    if(mode_ptr[0]->name == "Breathing")
+    {
+        w_prim = (mode_ptr[0]->colors.size() > 0) ? mode_ptr[0]->colors[0] : colors[0];
+        w_sec  = (mode_ptr[0]->colors.size() > 1) ? mode_ptr[0]->colors[1] : ToRGBColor(0, 0, 0);
+    }
+    else if(mode_ptr[0]->name == "Reactive")
+    {
+        w_prim = (mode_ptr[0]->colors.size() > 0) ? mode_ptr[0]->colors[0] : colors[0];
+    }
+    else if(mode_ptr[0]->name == "Static")
+    {
+        w_prim = colors[0];
+        if(zones[0].modes.size() > 1 && zones[0].modes[1].colors.size() > 0)
+        {
+            zones[0].modes[1].colors[0] = w_prim;
+        }
+    }
+
+    // Resolve Logo (Zone 1)
+    if(mode_ptr[1]->name == "Breathing")
+    {
+        l_prim = (mode_ptr[1]->colors.size() > 0) ? mode_ptr[1]->colors[0] : colors[1];
+        l_sec  = (mode_ptr[1]->colors.size() > 1) ? mode_ptr[1]->colors[1] : ToRGBColor(0, 0, 0);
+    }
+    else if(mode_ptr[1]->name == "Reactive")
+    {
+        l_prim = (mode_ptr[1]->colors.size() > 0) ? mode_ptr[1]->colors[0] : colors[1];
+    }
+    else if(mode_ptr[1]->name == "Static")
+    {
+        l_prim = colors[1];
+        if(zones[1].modes.size() > 1 && zones[1].modes[1].colors.size() > 0)
+        {
+            zones[1].modes[1].colors[0] = l_prim;
+        }
+    }
 
     unsigned char profile[256];
     memcpy(profile, controller->GetCachedProfile(), 256);
@@ -398,18 +466,23 @@ void RGBController_HyperXPulsefireRaid::SendHardwareConfig(unsigned char slot)
 
     profile[96] = 0; // TriggerMode: Solid
 
-    // Average speed for frame timing
-    unsigned int avg_speed = (mode_ptr[0]->speed + mode_ptr[1]->speed) / 2;
-    if(avg_speed < 1)   avg_speed = 1;
-    if(avg_speed > 100) avg_speed = 100;
+    bool is_animated = (mode_ptr[0]->name == "Breathing" || mode_ptr[0]->name == "Spectrum Cycle" ||
+                        mode_ptr[1]->name == "Breathing" || mode_ptr[1]->name == "Spectrum Cycle");
 
-    unsigned char interval_ms = (unsigned char)(100 - (avg_speed * 80 / 100));
-    if(interval_ms < 20)  interval_ms = 20;
-    if(interval_ms > 100) interval_ms = 100;
-
-    // Render 30 hardware frames
-    const unsigned int frame_count = 30;
+    const unsigned int frame_count = (is_animated) ? 30 : 1;
     unsigned char frame_buffer[frame_count * 6];
+
+    unsigned char interval_ms = 50;
+    if(is_animated)
+    {
+        unsigned int avg_speed = (mode_ptr[0]->speed + mode_ptr[1]->speed) / 2;
+        if(avg_speed < 1)   avg_speed = 1;
+        if(avg_speed > 100) avg_speed = 100;
+
+        interval_ms = (unsigned char)(100 - (avg_speed * 80 / 100));
+        if(interval_ms < 20)  interval_ms = 20;
+        if(interval_ms > 100) interval_ms = 100;
+    }
 
     for(unsigned int f = 0; f < frame_count; f++)
     {
@@ -427,13 +500,9 @@ void RGBController_HyperXPulsefireRaid::SendHardwareConfig(unsigned char slot)
         {
             w_col = HSVToRGB(f / 30.0f, 1.0f, 1.0f);
         }
-        else if(mode_ptr[0]->name == "Static")
+        else if(mode_ptr[0]->name == "Static" || mode_ptr[0]->name == "Direct")
         {
             w_col = w_prim;
-        }
-        else if(mode_ptr[0]->name == "Direct")
-        {
-            w_col = colors[0];
         }
         else // Reactive idle
         {
@@ -458,13 +527,9 @@ void RGBController_HyperXPulsefireRaid::SendHardwareConfig(unsigned char slot)
         {
             l_col = HSVToRGB(f / 30.0f, 1.0f, 1.0f);
         }
-        else if(mode_ptr[1]->name == "Static")
+        else if(mode_ptr[1]->name == "Static" || mode_ptr[1]->name == "Direct")
         {
             l_col = l_prim;
-        }
-        else if(mode_ptr[1]->name == "Direct")
-        {
-            l_col = colors[1];
         }
         else // Reactive idle
         {
@@ -478,6 +543,9 @@ void RGBController_HyperXPulsefireRaid::SendHardwareConfig(unsigned char slot)
 
     profile[112] = (unsigned char)frame_count;
     profile[113] = interval_ms;
+
+    // Persist changes into memory cache
+    memcpy(controller->GetCachedProfile(), profile, 256);
 
     controller->UploadAnimationFrames(frame_buffer, frame_count, slot);
     controller->SaveProfile(profile, brightness, slot);
