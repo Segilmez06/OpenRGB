@@ -157,6 +157,9 @@ RGBController_HyperXPulsefireRaid::RGBController_HyperXPulsefireRaid(HyperXPulse
         zones[1].modes[1].colors[0] = colors[1];
     }
 
+    // Activate runtime slot so live streaming / Effects take over
+    controller->ApplyProfile(modes[0].brightness, HYPERX_PULSEFIRE_RAID_SLOT_RUNTIME);
+
     keepalive_thread_run = 1;
     keepalive_thread = new std::thread(&RGBController_HyperXPulsefireRaid::KeepaliveThread, this);
 }
@@ -166,8 +169,16 @@ RGBController_HyperXPulsefireRaid::~RGBController_HyperXPulsefireRaid()
     Shutdown();
 
     keepalive_thread_run = 0;
-    keepalive_thread->join();
-    delete keepalive_thread;
+    if(keepalive_thread && keepalive_thread->joinable())
+    {
+        keepalive_thread->join();
+        delete keepalive_thread;
+        keepalive_thread = nullptr;
+    }
+
+    // Restore on-board non-volatile EEPROM profile (Slot 1) upon exit
+    unsigned char* cached = controller->GetCachedProfile();
+    controller->ApplyProfile(cached[14], HYPERX_PULSEFIRE_RAID_SLOT_FLASH);
 
     delete controller;
 }
@@ -303,6 +314,13 @@ void RGBController_HyperXPulsefireRaid::DeviceUpdateSingleLED(int /*led*/)
 
 void RGBController_HyperXPulsefireRaid::DeviceUpdateMode()
 {
+    if(modes[active_mode].name == "Direct")
+    {
+        unsigned char* cached = controller->GetCachedProfile();
+        unsigned char brightness = (modes[active_mode].brightness > 0) ? modes[active_mode].brightness : cached[14];
+        controller->ApplyProfile(brightness, HYPERX_PULSEFIRE_RAID_SLOT_RUNTIME);
+    }
+
     for(std::size_t zone_idx = 0; zone_idx < zones.size(); zone_idx++)
     {
         if(active_mode < (int)zones[zone_idx].modes.size())
@@ -544,8 +562,11 @@ void RGBController_HyperXPulsefireRaid::SendHardwareConfig(unsigned char slot)
     profile[112] = (unsigned char)frame_count;
     profile[113] = interval_ms;
 
-    // Persist changes into memory cache
-    memcpy(controller->GetCachedProfile(), profile, 256);
+    // Only update in-memory cache baseline when explicitly burning to EEPROM
+    if(slot == HYPERX_PULSEFIRE_RAID_SLOT_FLASH)
+    {
+        memcpy(controller->GetCachedProfile(), profile, 256);
+    }
 
     controller->UploadAnimationFrames(frame_buffer, frame_count, slot);
     controller->SaveProfile(profile, brightness, slot);
