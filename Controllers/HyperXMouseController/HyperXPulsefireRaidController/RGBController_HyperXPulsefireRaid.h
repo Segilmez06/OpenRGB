@@ -37,6 +37,7 @@ private:
     HyperXPulsefireRaidController*                      controller;
     std::thread*                                        keepalive_thread;
     std::atomic<bool>                                   keepalive_thread_run;
+    std::atomic<bool>                                   direct_slot_active;
     std::chrono::time_point<std::chrono::steady_clock>  last_update_time;
 
     void                                                KeepaliveThread();

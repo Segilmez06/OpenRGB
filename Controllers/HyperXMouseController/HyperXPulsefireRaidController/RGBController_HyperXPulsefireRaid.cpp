@@ -157,8 +157,7 @@ RGBController_HyperXPulsefireRaid::RGBController_HyperXPulsefireRaid(HyperXPulse
         zones[1].modes[1].colors[0] = colors[1];
     }
 
-    // Activate runtime slot so live streaming / Effects take over
-    controller->ApplyProfile(modes[0].brightness, HYPERX_PULSEFIRE_RAID_SLOT_RUNTIME);
+    direct_slot_active = false;
 
     keepalive_thread_run = 1;
     keepalive_thread = new std::thread(&RGBController_HyperXPulsefireRaid::KeepaliveThread, this);
@@ -179,6 +178,7 @@ RGBController_HyperXPulsefireRaid::~RGBController_HyperXPulsefireRaid()
     // Restore on-board non-volatile EEPROM profile (Slot 1) upon exit
     unsigned char* cached = controller->GetCachedProfile();
     controller->ApplyProfile(cached[14], HYPERX_PULSEFIRE_RAID_SLOT_FLASH);
+    direct_slot_active = false;
 
     delete controller;
 }
@@ -293,11 +293,20 @@ void RGBController_HyperXPulsefireRaid::DeviceUpdateLEDs()
 {
     if(modes[active_mode].name == "Direct")
     {
+        if(!direct_slot_active.load())
+        {
+            unsigned char* cached = controller->GetCachedProfile();
+            unsigned char brightness = (modes[active_mode].brightness > 0) ? modes[active_mode].brightness : cached[14];
+            controller->ApplyProfile(brightness, HYPERX_PULSEFIRE_RAID_SLOT_RUNTIME);
+            direct_slot_active = true;
+        }
+
         last_update_time = std::chrono::steady_clock::now();
         controller->SendColors(colors);
     }
     else
     {
+        direct_slot_active = false;
         SendHardwareConfig(HYPERX_PULSEFIRE_RAID_SLOT_RUNTIME);
     }
 }
@@ -319,6 +328,11 @@ void RGBController_HyperXPulsefireRaid::DeviceUpdateMode()
         unsigned char* cached = controller->GetCachedProfile();
         unsigned char brightness = (modes[active_mode].brightness > 0) ? modes[active_mode].brightness : cached[14];
         controller->ApplyProfile(brightness, HYPERX_PULSEFIRE_RAID_SLOT_RUNTIME);
+        direct_slot_active = true;
+    }
+    else
+    {
+        direct_slot_active = false;
     }
 
     for(std::size_t zone_idx = 0; zone_idx < zones.size(); zone_idx++)
@@ -565,6 +579,7 @@ void RGBController_HyperXPulsefireRaid::SendHardwareConfig(unsigned char slot)
     // Only update in-memory cache baseline when explicitly burning to EEPROM
     if(slot == HYPERX_PULSEFIRE_RAID_SLOT_FLASH)
     {
+        direct_slot_active = false;
         memcpy(controller->GetCachedProfile(), profile, 256);
     }
 
@@ -576,7 +591,7 @@ void RGBController_HyperXPulsefireRaid::KeepaliveThread()
 {
     while(keepalive_thread_run.load())
     {
-        if(active_mode == 0) // Direct Mode only
+        if(active_mode == 0 && direct_slot_active.load()) // Direct Mode only when active
         {
             if((std::chrono::steady_clock::now() - last_update_time) > 1s)
             {
