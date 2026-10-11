@@ -545,6 +545,14 @@ void OpenRGBDialog::handleAboutToQuit()
 
 void OpenRGBDialog::changeEvent(QEvent *event)
 {
+    if(event->type() == QEvent::WindowStateChange)
+    {
+        if(isMinimized())
+        {
+            hide();
+        }
+    }
+
     if(event->type() == QEvent::LanguageChange)
     {
         ui->retranslateUi(this);
@@ -1794,21 +1802,15 @@ void OpenRGBDialog::on_SetAllDevices(unsigned char red, unsigned char green, uns
 
 void OpenRGBDialog::on_ShowHide()
 {
-    if(isHidden())
+    if(isHidden() || isMinimized())
     {
 #ifdef __APPLE__
         MacUtils::ToggleApplicationDocklessState(true);
 #endif
+        showNormal();
         show();
-        if(isMinimized())
-        {
-            bool maximize = isMaximized();
-            showNormal();
-            if(maximize)
-            {
-                showMaximized();
-            }
-        }
+        raise();
+        activateWindow();
     }
     else
     {
@@ -1894,21 +1896,9 @@ void OpenRGBDialog::onShowDialogMessage()
 
 void OpenRGBDialog::on_ReShow(QSystemTrayIcon::ActivationReason reason)
 {
-    if (reason == QSystemTrayIcon::DoubleClick)
+    if(reason == QSystemTrayIcon::Trigger || reason == QSystemTrayIcon::DoubleClick)
     {
-        if (isHidden())
-        {
-            show();
-            if(isMinimized())
-            {
-                bool maximize = isMaximized();
-                showNormal();
-                if(maximize)
-                {
-                    showMaximized();
-                }
-            }
-        }
+        on_ShowHide();
     }
 }
 
