@@ -12,6 +12,8 @@
 #pragma once
 
 #include <chrono>
+#include <atomic>
+#include <thread>
 #include "RGBController.h"
 #include "HyperXPulsefireRaidController.h"
 
@@ -28,6 +30,7 @@ public:
     void DeviceUpdateSingleLED(int led);
 
     void DeviceUpdateMode();
+    void DeviceUpdateZoneMode(int zone);
     void DeviceSaveMode();
 
 private:
@@ -35,5 +38,7 @@ private:
     std::thread*                                        keepalive_thread;
     std::atomic<bool>                                   keepalive_thread_run;
     std::chrono::time_point<std::chrono::steady_clock>  last_update_time;
+
     void                                                KeepaliveThread();
+    void                                                SendHardwareConfig(unsigned char slot);
 };
